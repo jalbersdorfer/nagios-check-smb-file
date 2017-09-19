@@ -463,6 +463,35 @@ sub getFileStat {
     return \@filestat;
 }
 
+sub getDirectoryListing {
+    my $smb = shift;
+    my $full_file_path = shift;
+
+    my $fd;
+    my %directory_files = ();
+
+    # The checks are only valid if the path is a directory and is readable
+    if (!($fd = $smb->opendir($full_file_path))) {
+        showOutputAndExit("$! ($full_file_path)",'CRITICAL');
+    }
+
+    foreach my $filename ($smb->readdir($fd)) {
+        my $full_filename = "$full_file_path/$filename";
+        if (($o_filename_match and !$o_match_case) and $filename =~ m/$o_filename_match/i) {
+            $directory_files{"$o_filepath/$filename"} = \@{ getFileStat($full_filename, $smb) };
+        }
+        elsif (($o_filename_match and $o_match_case) and $filename =~ m/$o_filename_match/) {
+            $directory_files{"$o_filepath/$filename"} = \@{ getFileStat($full_filename, $smb) };
+        }
+        elsif (!$o_filename_match and $o_mode_directory) {
+            $directory_files{"$o_filepath/$filename"} = \@{ getFileStat($full_filename, $smb) };
+        }
+    }
+
+    $smb->close($fd);
+    return %directory_files;
+}
+
 #####################################################################################
 ### Command Line Option Configuration
 #####################################################################################
@@ -572,30 +601,11 @@ showOutputAndExit("$! ($full_file_path)",'CRITICAL') if ($#fileStat == 0);
 my $final_ok_message = '';
 
 if ($o_aggregate && ($o_filename_match || $o_mode_directory)) {
-    my $fd;
-    my %directory_files = ();
-    my (@critical_matches, @warning_matches) = ();
-    my (@critical_errors, @warning_errors) = ();
-
-    # The checks are only valid if the path is a directory and is readable
-    if (!($fd = $smb->opendir($full_file_path))) {
-        showOutputAndExit("$! ($full_file_path)",'CRITICAL');
-    }
-
-    foreach my $filename ($smb->readdir($fd)) {
-        my $full_filename = "$full_file_path/$filename";
-        if (($o_filename_match and !$o_match_case) and $filename =~ m/$o_filename_match/i) {
-            $directory_files{"$o_filepath/$filename"} = \@{ getFileStat($full_filename, $smb) };
-        }
-        elsif (($o_filename_match and $o_match_case) and $filename =~ m/$o_filename_match/) {
-            $directory_files{"$o_filepath/$filename"} = \@{ getFileStat($full_filename, $smb) };
-        }
-        elsif (!$o_filename_match and $o_mode_directory) {
-            $directory_files{"$o_filepath/$filename"} = \@{ getFileStat($full_filename, $smb) };
-        }
-    }
-
+    my %directory_files = getDirectoryListing($smb, $full_file_path);
     my $prop = $AGGREGATE{uc $o_aggregate}{'STAT'};
+    if (!$prop) {
+        showOutputAndExit("Aggregate $o_aggregate unknown. Must be one of [mmin|mmax|amin|amax|smin|smax]",'UNKNOWN');
+    }
     my $dir = $AGGREGATE{uc $o_aggregate}{'COMPARER'};
     foreach my $name (sort { $directory_files{$dir ? $a : $b}[$prop] <=> $directory_files{$dir ? $b : $a}[$prop] } keys %directory_files) {
         $o_filepath = $name;
@@ -608,7 +618,7 @@ if ($o_aggregate && ($o_filename_match || $o_mode_directory)) {
 # Folder context mode if any of these are true...
 if (!$o_aggregate && ($o_filename_match || $o_mode_directory)) {
     my $fd;
-    my %directory_files = ();
+    my %directory_files = getDirectoryListing($smb, $full_file_path);
     my (@critical_matches, @warning_matches) = ();
     my (@critical_errors, @warning_errors) = ();
 
