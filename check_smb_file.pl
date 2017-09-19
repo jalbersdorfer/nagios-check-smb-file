@@ -293,6 +293,7 @@ sub splitPropertyValue {
 # Check a file stat property for a specified value
 #------------------------------------------------------------------------------------
 sub checkFilePropertyValue {
+    my ($file) = shift;
     my ($value) = shift;
     my ($uom) = shift;
     my (@file_stat) = @{(shift)};
@@ -316,7 +317,7 @@ sub checkFilePropertyValue {
                 "%.2f",
                 ($START_TIME - $file_stat[$value_stat]) / $value_convert
             );
-            $output = "File property '$FILE_PROPERTY' is ${readable} ${uom} old. "
+            $output = "$file property '$FILE_PROPERTY' is ${readable} ${uom} old. "
                 . "Time for property is " . localtime($file_stat[$value_stat]) . "'";
        }
     }
@@ -570,8 +571,42 @@ showOutputAndExit("$! ($full_file_path)",'CRITICAL') if ($#fileStat == 0);
 
 my $final_ok_message = '';
 
+if ($o_aggregate && ($o_filename_match || $o_mode_directory)) {
+    my $fd;
+    my %directory_files = ();
+    my (@critical_matches, @warning_matches) = ();
+    my (@critical_errors, @warning_errors) = ();
+
+    # The checks are only valid if the path is a directory and is readable
+    if (!($fd = $smb->opendir($full_file_path))) {
+        showOutputAndExit("$! ($full_file_path)",'CRITICAL');
+    }
+
+    foreach my $filename ($smb->readdir($fd)) {
+        my $full_filename = "$full_file_path/$filename";
+        if (($o_filename_match and !$o_match_case) and $filename =~ m/$o_filename_match/i) {
+            $directory_files{"$o_filepath/$filename"} = \@{ getFileStat($full_filename, $smb) };
+        }
+        elsif (($o_filename_match and $o_match_case) and $filename =~ m/$o_filename_match/) {
+            $directory_files{"$o_filepath/$filename"} = \@{ getFileStat($full_filename, $smb) };
+        }
+        elsif (!$o_filename_match and $o_mode_directory) {
+            $directory_files{"$o_filepath/$filename"} = \@{ getFileStat($full_filename, $smb) };
+        }
+    }
+
+    my $prop = $AGGREGATE{uc $o_aggregate}{'STAT'};
+    my $dir = $AGGREGATE{uc $o_aggregate}{'COMPARER'};
+    foreach my $name (sort { $directory_files{$dir ? $a : $b}[$prop] <=> $directory_files{$dir ? $b : $a}[$prop] } keys %directory_files) {
+        $o_filepath = $name;
+        (@fileStat) = @{$directory_files{$name}};
+        last;
+    }
+}
+
+
 # Folder context mode if any of these are true...
-if ($o_filename_match || $o_mode_directory) {
+if (!$o_aggregate && ($o_filename_match || $o_mode_directory)) {
     my $fd;
     my %directory_files = ();
     my (@critical_matches, @warning_matches) = ();
@@ -594,24 +629,12 @@ if ($o_filename_match || $o_mode_directory) {
         }
     }
 
-    # Aggregation #####################################################################################################################
-    if ($o_aggregate) {
-        my $prop = $AGGREGATE{uc $o_aggregate}{'STAT'};
-        my $dir = $AGGREGATE{uc $o_aggregate}{'COMPARER'};
-        my %aggregated_directory_files = ();
-        foreach my $name (sort { $directory_files{$dir ? $a : $b}[$prop] <=> $directory_files{$dir ? $b : $a}[$prop] } keys %directory_files) {
-            $aggregated_directory_files{$name} = $directory_files{$name};
-            last;
-        }
-
-        %directory_files = %aggregated_directory_files;
-    }
 
     while (my ($key, $value) = each(%directory_files)) {
-        if ($o_critical and my $c_output = checkFilePropertyValue($critical_value, $critical_uom, $value)) {
+        if ($o_critical and my $c_output = checkFilePropertyValue($key, $critical_value, $critical_uom, $value)) {
             push(@critical_errors, $key);
         }
-        elsif ($o_warning and my $w_output = checkFilePropertyValue($warning_value, $warning_uom, $value)) {
+        elsif ($o_warning and my $w_output = checkFilePropertyValue($key, $warning_value, $warning_uom, $value)) {
             push(@warning_errors, $key);
         }
         if ($o_warning_match || $o_critical_match) {
@@ -678,10 +701,10 @@ else {
         );
     }
 
-    if ($o_critical and my $output = checkFilePropertyValue($critical_value, $critical_uom, \@fileStat)) {
+    if ($o_critical and my $output = checkFilePropertyValue($o_filepath, $critical_value, $critical_uom, \@fileStat)) {
         showOutputAndExit($output,'CRITICAL');
     }
-    if ($o_warning and my $output = checkFilePropertyValue($warning_value, $warning_uom, \@fileStat)) {
+    if ($o_warning and my $output = checkFilePropertyValue($o_filepath, $warning_value, $warning_uom, \@fileStat)) {
         showOutputAndExit($output,'WARNING');
     }
 
