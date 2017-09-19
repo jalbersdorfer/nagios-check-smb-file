@@ -229,7 +229,6 @@ File Paths
     commands...
 
     C\$\$/some_directory/some_file.txt
-
     Also note that file path checks are case-insensitive.
 
 Examples
@@ -670,7 +669,7 @@ if (!$o_aggregate && ($o_filename_match || $o_mode_directory)) {
         }
     }
     $smb->close($fd);
-    if (scalar keys %directory_files == 0) {
+    if (scalar keys %directory_files == 0 && !$o_warning_files && !$o_critical_files) {
         showOutputAndExit("No files found",'CRITICAL');
     }
     if (scalar @critical_errors || scalar @warning_errors) {
