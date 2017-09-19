@@ -48,6 +48,7 @@ my $o_critical_match;
 my $o_warning_files;
 my $o_critical_files;
 my $o_filename_match;
+my $o_aggregate;
 my $o_expand_datetime;
 my $o_mode_directory;
 my $o_match_case;
@@ -106,6 +107,35 @@ my %VALUE_MEASURE = (
     }
 );
 
+# Valid aggregates to set
+my %AGGREGATE = (
+    'SMIN' => {
+        'STAT'        => $VALUE_PROPERTY{'SIZE'}{'STAT'},
+        'COMPARER'    => 1
+    },
+    'SMAX' => {
+        'STAT'        => $VALUE_PROPERTY{'SIZE'}{'STAT'},
+        'COMPARER'    => 0
+    },
+    'AMIN' => {
+        'STAT'        => $VALUE_PROPERTY{'ACCESSED'}{'STAT'},
+        'COMPARER'    => 1
+    },
+    'AMAX' => {
+        'STAT'        => $VALUE_PROPERTY{'ACCESSED'}{'STAT'},
+        'COMPARER'    => 0
+    },
+    'MMIN' => {
+        'STAT'        => $VALUE_PROPERTY{'MODIFIED'}{'STAT'},
+        'COMPARER'    => 1
+    },
+    'MMAX' => {
+        'STAT'        => $VALUE_PROPERTY{'MODIFIED'}{'STAT'},
+        'COMPARER'    => 0
+    }
+);
+
+
 #####################################################################################
 ### Begin Subroutines 
 #####################################################################################
@@ -132,6 +162,7 @@ This plugin tests the existence/age/size/contents of a file/folder on a SMB shar
     -f, --filename        <filename>    The share and path to the file/directory (required)
     -F  --filename-match  <regex>       Only check filenames matching this regex
     -D  --mode-directory                Treat the filename to check as a directory
+    -A  --aggregate       <aggregate>   either [mmin | mmax | amin | amax | smin | smax]
     -w, --warning         <value>       Warning if file property exceeds value
     -c, --critical        <value>       Critical if file property exceeds value
     -m, --warning-match   <regex>       Warning if contents match regex
@@ -172,6 +203,18 @@ Warning and Critical Values
     modified | Last modified time
     accessed | Last accessed time
     size     | Size of the file
+
+    You can aggregate a few different properties to its min resp. max Value to
+    find a specific file to test on its property instead of exact name.
+
+    aggregate | Description
+    ---------- ----------------------------
+    mmin      | Oldest Modification Date
+    mmax      | Youngest Modification Date
+    amin      | Oldest Access Date
+    amax      | Youngest Access Date
+    smin      | Smallest File Size
+    smax      | Largest File Size
 
 File Paths
 ----------
@@ -434,6 +477,7 @@ GetOptions(
     't|warning-files=s'  => \$o_warning_files,
     'T|critical-files=s' => \$o_critical_files,
     'F|filename-match=s' => \$o_filename_match,
+    'A|aggregate=s'      => \$o_aggregate,
     'e|expand-datetime'  => \$o_expand_datetime,
     'C|match-case'       => \$o_match_case,
     'D|mode-directory'   => \$o_mode_directory,
@@ -549,6 +593,20 @@ if ($o_filename_match || $o_mode_directory) {
             $directory_files{"$o_filepath/$filename"} = \@{ getFileStat($full_filename, $smb) };
         }
     }
+
+    # Aggregation #####################################################################################################################
+    if ($o_aggregate) {
+        my $prop = $AGGREGATE{uc $o_aggregate}{'STAT'};
+        my $dir = $AGGREGATE{uc $o_aggregate}{'COMPARER'};
+        my %aggregated_directory_files = ();
+        foreach my $name (sort { $directory_files{$dir ? $a : $b}[$prop] <=> $directory_files{$dir ? $b : $a}[$prop] } keys %directory_files) {
+            $aggregated_directory_files{$name} = $directory_files{$name};
+            last;
+        }
+
+        %directory_files = %aggregated_directory_files;
+    }
+
     while (my ($key, $value) = each(%directory_files)) {
         if ($o_critical and my $c_output = checkFilePropertyValue($critical_value, $critical_uom, $value)) {
             push(@critical_errors, $key);
