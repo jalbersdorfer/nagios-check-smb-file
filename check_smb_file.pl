@@ -48,8 +48,10 @@ my $o_critical_match;
 my $o_warning_files;
 my $o_critical_files;
 my $o_filename_match;
+my $o_aggregate;
 my $o_expand_datetime;
 my $o_mode_directory;
+my $o_empty_ok;
 my $o_match_case;
 my $o_smbflag_kerberos;
 my $o_no_data;
@@ -106,6 +108,35 @@ my %VALUE_MEASURE = (
     }
 );
 
+# Valid aggregates to set
+my %AGGREGATE = (
+    'SMIN' => {
+        'STAT'        => $VALUE_PROPERTY{'SIZE'}{'STAT'},
+        'COMPARER'    => 1
+    },
+    'SMAX' => {
+        'STAT'        => $VALUE_PROPERTY{'SIZE'}{'STAT'},
+        'COMPARER'    => 0
+    },
+    'AMIN' => {
+        'STAT'        => $VALUE_PROPERTY{'ACCESSED'}{'STAT'},
+        'COMPARER'    => 1
+    },
+    'AMAX' => {
+        'STAT'        => $VALUE_PROPERTY{'ACCESSED'}{'STAT'},
+        'COMPARER'    => 0
+    },
+    'MMIN' => {
+        'STAT'        => $VALUE_PROPERTY{'MODIFIED'}{'STAT'},
+        'COMPARER'    => 1
+    },
+    'MMAX' => {
+        'STAT'        => $VALUE_PROPERTY{'MODIFIED'}{'STAT'},
+        'COMPARER'    => 0
+    }
+);
+
+
 #####################################################################################
 ### Begin Subroutines 
 #####################################################################################
@@ -132,6 +163,8 @@ This plugin tests the existence/age/size/contents of a file/folder on a SMB shar
     -f, --filename        <filename>    The share and path to the file/directory (required)
     -F  --filename-match  <regex>       Only check filenames matching this regex
     -D  --mode-directory                Treat the filename to check as a directory
+    -E  --empty-ok                      Treat an empty directory or no matching files to be okay (Default: false)
+    -A  --aggregate       <aggregate>   either [mmin | mmax | amin | amax | smin | smax]
     -w, --warning         <value>       Warning if file property exceeds value
     -c, --critical        <value>       Critical if file property exceeds value
     -m, --warning-match   <regex>       Warning if contents match regex
@@ -172,6 +205,18 @@ Warning and Critical Values
     modified | Last modified time
     accessed | Last accessed time
     size     | Size of the file
+
+    You can aggregate a few different properties to its min resp. max Value to
+    find a specific file to test on its property instead of exact name.
+
+    aggregate | Description
+    ---------- ----------------------------
+    mmin      | Oldest Modification Date
+    mmax      | Youngest Modification Date
+    amin      | Oldest Access Date
+    amax      | Youngest Access Date
+    smin      | Smallest File Size
+    smax      | Largest File Size
 
 File Paths
 ----------
@@ -250,6 +295,7 @@ sub splitPropertyValue {
 # Check a file stat property for a specified value
 #------------------------------------------------------------------------------------
 sub checkFilePropertyValue {
+    my ($file) = shift;
     my ($value) = shift;
     my ($uom) = shift;
     my (@file_stat) = @{(shift)};
@@ -273,7 +319,7 @@ sub checkFilePropertyValue {
                 "%.2f",
                 ($START_TIME - $file_stat[$value_stat]) / $value_convert
             );
-            $output = "File property '$FILE_PROPERTY' is ${readable} ${uom} old. "
+            $output = "$file property '$FILE_PROPERTY' is ${readable} ${uom} old. "
                 . "Time for property is " . localtime($file_stat[$value_stat]) . "'";
        }
     }
@@ -419,6 +465,35 @@ sub getFileStat {
     return \@filestat;
 }
 
+sub getDirectoryListing {
+    my $smb = shift;
+    my $full_file_path = shift;
+
+    my $fd;
+    my %directory_files = ();
+
+    # The checks are only valid if the path is a directory and is readable
+    if (!($fd = $smb->opendir($full_file_path))) {
+        showOutputAndExit("$! ($full_file_path)",'CRITICAL');
+    }
+
+    foreach my $filename ($smb->readdir($fd)) {
+        my $full_filename = "$full_file_path/$filename";
+        if (($o_filename_match and !$o_match_case) and $filename =~ m/$o_filename_match/i) {
+            $directory_files{"$o_filepath/$filename"} = \@{ getFileStat($full_filename, $smb) };
+        }
+        elsif (($o_filename_match and $o_match_case) and $filename =~ m/$o_filename_match/) {
+            $directory_files{"$o_filepath/$filename"} = \@{ getFileStat($full_filename, $smb) };
+        }
+        elsif (!$o_filename_match and $o_mode_directory) {
+            $directory_files{"$o_filepath/$filename"} = \@{ getFileStat($full_filename, $smb) };
+        }
+    }
+
+    $smb->close($fd);
+    return %directory_files;
+}
+
 #####################################################################################
 ### Command Line Option Configuration
 #####################################################################################
@@ -434,9 +509,11 @@ GetOptions(
     't|warning-files=s'  => \$o_warning_files,
     'T|critical-files=s' => \$o_critical_files,
     'F|filename-match=s' => \$o_filename_match,
+    'A|aggregate=s'      => \$o_aggregate,
     'e|expand-datetime'  => \$o_expand_datetime,
     'C|match-case'       => \$o_match_case,
     'D|mode-directory'   => \$o_mode_directory,
+    'E|empty-ok'         => \$o_empty_ok,
     'H|host=s'           => \$o_host,
     'K|kerberos'         => \$o_smbflag_kerberos,
     'W|workgroup=s'      => \$o_smbinit{'workgroup'},
@@ -526,10 +603,29 @@ showOutputAndExit("$! ($full_file_path)",'CRITICAL') if ($#fileStat == 0);
 
 my $final_ok_message = '';
 
+if ($o_aggregate && ($o_filename_match || $o_mode_directory)) {
+    my $dir = $AGGREGATE{uc $o_aggregate}{'COMPARER'};
+    my $prop = $AGGREGATE{uc $o_aggregate}{'STAT'};
+    if (!$prop) {
+        showOutputAndExit("Aggregate $o_aggregate unknown. Must be one of [mmin|mmax|amin|amax|smin|smax]",'UNKNOWN');
+    }
+
+    my %directory_files = getDirectoryListing($smb, $full_file_path);
+    if (!scalar keys %directory_files) {
+        showOutputAndExit("$o_filepath is empty or has no matching files.", $o_empty_ok ? 'OK' : 'CRITICAL');
+    }
+
+    foreach my $name (sort { $directory_files{$dir ? $a : $b}[$prop] <=> $directory_files{$dir ? $b : $a}[$prop] } keys %directory_files) {
+        $o_filepath = $name;
+        (@fileStat) = @{$directory_files{$name}};
+        last;
+    }
+}
+
 # Folder context mode if any of these are true...
-if ($o_filename_match || $o_mode_directory) {
+if (!$o_aggregate && ($o_filename_match || $o_mode_directory)) {
     my $fd;
-    my %directory_files = ();
+    my %directory_files = getDirectoryListing($smb, $full_file_path);
     my (@critical_matches, @warning_matches) = ();
     my (@critical_errors, @warning_errors) = ();
 
@@ -549,11 +645,13 @@ if ($o_filename_match || $o_mode_directory) {
             $directory_files{"$o_filepath/$filename"} = \@{ getFileStat($full_filename, $smb) };
         }
     }
+
+
     while (my ($key, $value) = each(%directory_files)) {
-        if ($o_critical and my $c_output = checkFilePropertyValue($critical_value, $critical_uom, $value)) {
+        if ($o_critical and my $c_output = checkFilePropertyValue($key, $critical_value, $critical_uom, $value)) {
             push(@critical_errors, $key);
         }
-        elsif ($o_warning and my $w_output = checkFilePropertyValue($warning_value, $warning_uom, $value)) {
+        elsif ($o_warning and my $w_output = checkFilePropertyValue($key, $warning_value, $warning_uom, $value)) {
             push(@warning_errors, $key);
         }
         if ($o_warning_match || $o_critical_match) {
@@ -579,7 +677,7 @@ if ($o_filename_match || $o_mode_directory) {
         }
     }
     $smb->close($fd);
-    if (scalar keys %directory_files == 0) {
+    if (scalar keys %directory_files == 0 && !$o_warning_files && !$o_critical_files) {
         showOutputAndExit("No files found",'CRITICAL');
     }
     if (scalar @critical_errors || scalar @warning_errors) {
@@ -620,10 +718,10 @@ else {
         );
     }
 
-    if ($o_critical and my $output = checkFilePropertyValue($critical_value, $critical_uom, \@fileStat)) {
+    if ($o_critical and my $output = checkFilePropertyValue($o_filepath, $critical_value, $critical_uom, \@fileStat)) {
         showOutputAndExit($output,'CRITICAL');
     }
-    if ($o_warning and my $output = checkFilePropertyValue($warning_value, $warning_uom, \@fileStat)) {
+    if ($o_warning and my $output = checkFilePropertyValue($o_filepath, $warning_value, $warning_uom, \@fileStat)) {
         showOutputAndExit($output,'WARNING');
     }
 
