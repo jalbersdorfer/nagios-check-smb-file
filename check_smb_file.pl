@@ -51,6 +51,7 @@ my $o_filename_match;
 my $o_aggregate;
 my $o_expand_datetime;
 my $o_mode_directory;
+my $o_empty_ok;
 my $o_match_case;
 my $o_smbflag_kerberos;
 my $o_no_data;
@@ -162,6 +163,7 @@ This plugin tests the existence/age/size/contents of a file/folder on a SMB shar
     -f, --filename        <filename>    The share and path to the file/directory (required)
     -F  --filename-match  <regex>       Only check filenames matching this regex
     -D  --mode-directory                Treat the filename to check as a directory
+    -E  --empty-ok                      Treat an empty directory or no matching files to be okay (Default: false)
     -A  --aggregate       <aggregate>   either [mmin | mmax | amin | amax | smin | smax]
     -w, --warning         <value>       Warning if file property exceeds value
     -c, --critical        <value>       Critical if file property exceeds value
@@ -229,6 +231,7 @@ File Paths
     commands...
 
     C\$\$/some_directory/some_file.txt
+
     Also note that file path checks are case-insensitive.
 
 Examples
@@ -510,6 +513,7 @@ GetOptions(
     'e|expand-datetime'  => \$o_expand_datetime,
     'C|match-case'       => \$o_match_case,
     'D|mode-directory'   => \$o_mode_directory,
+    'E|empty-ok'         => \$o_empty_ok,
     'H|host=s'           => \$o_host,
     'K|kerberos'         => \$o_smbflag_kerberos,
     'W|workgroup=s'      => \$o_smbinit{'workgroup'},
@@ -600,19 +604,23 @@ showOutputAndExit("$! ($full_file_path)",'CRITICAL') if ($#fileStat == 0);
 my $final_ok_message = '';
 
 if ($o_aggregate && ($o_filename_match || $o_mode_directory)) {
-    my %directory_files = getDirectoryListing($smb, $full_file_path);
+    my $dir = $AGGREGATE{uc $o_aggregate}{'COMPARER'};
     my $prop = $AGGREGATE{uc $o_aggregate}{'STAT'};
     if (!$prop) {
         showOutputAndExit("Aggregate $o_aggregate unknown. Must be one of [mmin|mmax|amin|amax|smin|smax]",'UNKNOWN');
     }
-    my $dir = $AGGREGATE{uc $o_aggregate}{'COMPARER'};
+
+    my %directory_files = getDirectoryListing($smb, $full_file_path);
+    if (!scalar keys %directory_files) {
+        showOutputAndExit("$o_filepath is empty or has no matching files.", $o_empty_ok ? 'OK' : 'CRITICAL');
+    }
+
     foreach my $name (sort { $directory_files{$dir ? $a : $b}[$prop] <=> $directory_files{$dir ? $b : $a}[$prop] } keys %directory_files) {
         $o_filepath = $name;
         (@fileStat) = @{$directory_files{$name}};
         last;
     }
 }
-
 
 # Folder context mode if any of these are true...
 if (!$o_aggregate && ($o_filename_match || $o_mode_directory)) {
