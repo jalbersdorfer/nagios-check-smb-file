@@ -635,6 +635,7 @@ if (!$o_aggregate && ($o_filename_match || $o_mode_directory)) {
     }
     foreach my $filename ($smb->readdir($fd)) {
         my $full_filename = "$full_file_path/$filename";
+        if($filename eq "." || $filename eq ".."){next;}
         if (($o_filename_match and !$o_match_case) and $filename =~ m/$o_filename_match/i) {
             $directory_files{"$o_filepath/$filename"} = \@{ getFileStat($full_filename, $smb) };
         }
@@ -678,7 +679,7 @@ if (!$o_aggregate && ($o_filename_match || $o_mode_directory)) {
     }
     $smb->close($fd);
     if (scalar keys %directory_files == 0 && !$o_warning_files && !$o_critical_files) {
-        showOutputAndExit("No files found",'CRITICAL');
+        showOutputAndExit("No files found", $o_empty_ok ? 'OK' : 'CRITICAL');
     }
     if (scalar @critical_errors || scalar @warning_errors) {
         showOutputAndExit(
